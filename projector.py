@@ -56,6 +56,7 @@ def project(
     noise_ramp_length=0.75,
     regularize_noise_weight=1e5,
     verbose=False,
+    check_point_w_file=None,
     device: torch.device
 ):
     assert target.shape == (G.img_channels, G.img_resolution, G.img_resolution)
@@ -73,9 +74,13 @@ def project(
     logprint(
         f'Computing W midpoint and stddev using {w_avg_samples} samples...')
     z_samples = np.random.RandomState(123).randn(w_avg_samples, G.z_dim)
-    w_samples = G.mapping(
-        torch.from_numpy(z_samples).to(device),
-        None)  # [N, L, C]
+    if check_point_w_file:
+        w_samples = torch.from_numpy(np.load(check_point_w_file)['w'])
+        print(f'You use checkpoint {check_point_w_file}.')
+    else:
+        w_samples = G.mapping(
+            torch.from_numpy(z_samples).to(device),
+            None)  # [N, L, C]
     w_samples = w_samples[:, :1, :].cpu().numpy().astype(
         np.float32)       # [N, 1, C]
     w_avg = np.mean(w_samples, axis=0, keepdims=True)      # [1, 1, C]
@@ -417,6 +422,8 @@ def run_projection_from_outside(
         seed: int,
         num_steps: int,
         keypoint: str,
+        output_file_name=None,
+        check_point_w_file=None,
 ):
     """Project given image to the latent space of pretrained network pickle.
     Examples:
@@ -448,6 +455,17 @@ def run_projection_from_outside(
 
     if keypoint:
         phase_pose = get_pose_from_keypoint_string(keypoint, G.img_resolution)
+        projected_w_steps = project(
+            image2StyleGAN_method,
+            G,
+            target=torch.tensor(target_uint8.transpose(
+                [2, 0, 1]), device=device),  # pylint: disable=not-callable
+            pose=phase_pose,
+            num_steps=num_steps,
+            device=device,
+            verbose=True,
+            check_point_w_file=check_point_w_file
+        )
     else:
         phase_pose = None
         # Optimize projection.
@@ -460,7 +478,8 @@ def run_projection_from_outside(
             pose=phase_pose,
             num_steps=num_steps,
             device=device,
-            verbose=True
+            verbose=True,
+            check_point_w_file=check_point_w_file
         )
         print(f'Elapsed: {(perf_counter()-start_time):.1f} s')
 
@@ -530,8 +549,16 @@ def run_projection_from_outside(
         0,
         255).to(
         torch.uint8)[0].cpu().numpy()
-    PIL.Image.fromarray(synth_image, 'RGB').save(f'{outdir}/proj.png')
-    np.savez(f'{outdir}/projected_w.npz',
+    if output_file_name:
+        PIL.Image.fromarray(synth_image, 'RGB').save(
+            f'{outdir}/{output_file_name}.png')
+        np.savez(f'{outdir}/{output_file_name}_w.npz',
+                 w=projected_w.unsqueeze(0).cpu().numpy())
+    else:
+        PIL.Image.fromarray(synth_image, 'RGB').save(f'{outdir}/proj.png')
+        np.savez(f'{outdir}/projected_w.npz',
+                 w=projected_w.unsqueeze(0).cpu().numpy())
+    np.savez(f'{outdir}/{output_file_name}_w.npz',
              w=projected_w.unsqueeze(0).cpu().numpy())
     return projected_w.unsqueeze(0).cpu().numpy()
 # ----------------------------------------------------------------------------
