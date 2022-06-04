@@ -94,7 +94,10 @@ def project(
 
     # Features for target image.
     target_images = target.unsqueeze(0).to(device).to(torch.float32)
-    pose = pose.unsqueeze(0).to(device).to(torch.float32)
+    is_PC = False
+    if pose:
+        is_PC = True
+        pose = pose.unsqueeze(0).to(device).to(torch.float32)
     if target_images.shape[2] > 256:
         target_images = F.interpolate(
             target_images, size=(
@@ -144,8 +147,12 @@ def project(
         # Synth images from opt_w.
         w_noise = torch.randn_like(w_opt) * w_noise_scale
         ws = (w_opt + w_noise).repeat([1, G.mapping.num_ws, 1])
-        synth_images = G.synthesis(
-            ws, pose, ret_pose=False, noise_mode='const', force_fp32=True)
+        if is_PC:
+            synth_images = G.synthesis(
+                ws, pose, ret_pose=False, noise_mode='const', force_fp32=True)
+        else:
+            synth_images = G.synthesis(
+                ws, noise_mode='const', force_fp32=True)
 
         # Downsample image to 256x256 if it's larger than that. VGG was built
         # for 224x224 images.
@@ -160,8 +167,6 @@ def project(
             synth_images,
             resize_images=False,
             return_lpips=True)
-
-        synth_convs = vgg16_multi_layers_output(vgg16, target_images, convs)
 
         dist = (target_features - synth_features).square().sum()
 
@@ -180,6 +185,8 @@ def project(
 
         if image2GAN_method:
             # loss about conv1_1, conv1_2, conv3_2 and conv4_2
+            synth_convs = vgg16_multi_layers_output(
+                vgg16, target_images, convs)
             for conv in convs:
                 dist += (target_convs[conv] - synth_convs[conv]).square().sum()
 
@@ -439,20 +446,23 @@ def run_projection_from_outside(
         (G.img_resolution, G.img_resolution), PIL.Image.LANCZOS)
     target_uint8 = np.array(target_pil, dtype=np.uint8)
 
-    phase_pose = get_pose_from_keypoint_string(keypoint, G.img_resolution)
-    # Optimize projection.
-    start_time = perf_counter()
-    projected_w_steps = project(
-        image2StyleGAN_method,
-        G,
-        target=torch.tensor(target_uint8.transpose(
-            [2, 0, 1]), device=device),  # pylint: disable=not-callable
-        pose=phase_pose,
-        num_steps=num_steps,
-        device=device,
-        verbose=True
-    )
-    print(f'Elapsed: {(perf_counter()-start_time):.1f} s')
+    if keypoint:
+        phase_pose = get_pose_from_keypoint_string(keypoint, G.img_resolution)
+    else:
+        phase_pose = None
+        # Optimize projection.
+        start_time = perf_counter()
+        projected_w_steps = project(
+            image2StyleGAN_method,
+            G,
+            target=torch.tensor(target_uint8.transpose(
+                [2, 0, 1]), device=device),  # pylint: disable=not-callable
+            pose=phase_pose,
+            num_steps=num_steps,
+            device=device,
+            verbose=True
+        )
+        print(f'Elapsed: {(perf_counter()-start_time):.1f} s')
 
     # Render debug output: optional video and projected image and W vector.
     os.makedirs(outdir, exist_ok=True)
@@ -465,13 +475,21 @@ def run_projection_from_outside(
             bitrate='16M')
         print(f'Saving optimization progress video "{outdir}/proj.mp4"')
         for projected_w in projected_w_steps:
-            synth_image = G.synthesis(
-                projected_w.unsqueeze(0),
-                phase_pose.unsqueeze(0).to(device),
-                ret_pose=False,
-                noise_mode='const',
-                force_fp32=True
-            )
+            if phase_pose:
+                synth_image = G.synthesis(
+                    projected_w.unsqueeze(0),
+                    phase_pose.unsqueeze(0).to(device),
+                    ret_pose=False,
+                    noise_mode='const',
+                    force_fp32=True
+                )
+            else:
+                synth_image = G.synthesis(
+                    projected_w.unsqueeze(0),
+                    noise_mode='const',
+                    force_fp32=True
+                )
+
             synth_image = (synth_image + 1) * (255 / 2)
             synth_image = synth_image.permute(
                 0,
@@ -488,13 +506,21 @@ def run_projection_from_outside(
     # Save final projected frame and W vector.
     target_pil.save(f'{outdir}/target.png')
     projected_w = projected_w_steps[-1]
-    synth_image = G.synthesis(
-        projected_w.unsqueeze(0),
-        phase_pose.unsqueeze(0).to(device),
-        ret_pose=False,
-        noise_mode='const',
-        force_fp32=True
-    )
+
+    if phase_pose:
+        synth_image = G.synthesis(
+            projected_w.unsqueeze(0),
+            phase_pose.unsqueeze(0).to(device),
+            ret_pose=False,
+            noise_mode='const',
+            force_fp32=True
+        )
+    else:
+        synth_image = G.synthesis(
+            projected_w.unsqueeze(0),
+            noise_mode='const',
+            force_fp32=True
+        )
     synth_image = (synth_image + 1) * (255 / 2)
     synth_image = synth_image.permute(
         0,
