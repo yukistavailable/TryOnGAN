@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import PIL.Image
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 import dnnlib
@@ -25,7 +26,22 @@ import legacy
 from scipy.stats import multivariate_normal
 
 
+def vgg16_multi_layers_output(model, inputs, layers):
+    result = {}
+    for name, layer in model.layers.named_modules():
+        if name:
+            try:
+                outputs = layer(inputs)
+                inputs = outputs
+                if name in layers:
+                    result[name] = outputs
+            except BaseException:
+                break
+    return result
+
+
 def project(
+    image2GAN_method,
     G,
     # [C,H,W] and dynamic range [0,255], W & H must match G output resolution
     target: torch.Tensor,
@@ -43,6 +59,8 @@ def project(
     device: torch.device
 ):
     assert target.shape == (G.img_channels, G.img_resolution, G.img_resolution)
+
+    convs = ['conv1', 'conv2', 'conv6', 'conv9']
 
     def logprint(*args):
         if verbose:
@@ -81,6 +99,10 @@ def project(
         target_images = F.interpolate(
             target_images, size=(
                 256, 256), mode='area')
+
+    target_convs = vgg16_multi_layers_output(
+        vgg16, target_images, convs)
+
     target_features = vgg16(
         target_images,
         resize_images=False,
@@ -138,6 +160,9 @@ def project(
             synth_images,
             resize_images=False,
             return_lpips=True)
+
+        synth_convs = vgg16_multi_layers_output(vgg16, target_images, convs)
+
         dist = (target_features - synth_features).square().sum()
 
         # Noise regularization.
@@ -152,6 +177,16 @@ def project(
                 if noise.shape[2] <= 8:
                     break
                 noise = F.avg_pool2d(noise, kernel_size=2)
+
+        if image2GAN_method:
+            # loss about conv1_1, conv1_2, conv3_2 and conv4_2
+            for conv in convs:
+                dist += (target_convs[conv] - synth_convs[conv]).square().sum()
+
+            # MSE Loss
+            mse_loss = nn.MSELoss()
+            dist += mse_loss(target_images, synth_images)
+
         loss = dist + reg_loss * regularize_noise_weight
 
         # Step
@@ -257,6 +292,7 @@ def getGaussianHeatMap(bonePos):
 @click.option('--outdir', help='Where to save the output images',
               required=True, metavar='DIR')
 def run_projection(
+    image2StyleGAN_method: bool,
     network_pkl: str,
     target_fname: str,
     pose_fname: str,
@@ -299,6 +335,7 @@ def run_projection(
     # Optimize projection.
     start_time = perf_counter()
     projected_w_steps = project(
+        image2StyleGAN_method,
         G,
         target=torch.tensor(target_uint8.transpose(
             [2, 0, 1]), device=device),  # pylint: disable=not-callable
@@ -365,6 +402,7 @@ def run_projection(
 
 
 def run_projection_from_outside(
+        image2StyleGAN_method: bool,
         network_pkl: str,
         target_fname: str,
         outdir: str,
@@ -405,6 +443,7 @@ def run_projection_from_outside(
     # Optimize projection.
     start_time = perf_counter()
     projected_w_steps = project(
+        image2StyleGAN_method,
         G,
         target=torch.tensor(target_uint8.transpose(
             [2, 0, 1]), device=device),  # pylint: disable=not-callable

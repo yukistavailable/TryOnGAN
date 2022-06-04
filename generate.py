@@ -49,6 +49,7 @@ def generate_images_from_outside(
         G = legacy.load_network_pkl(f)['G_ema'].to(device)  # type: ignore
         if not torch.cuda.is_available():
             G = G.float()
+            print(G.c_dim)
 
     os.makedirs(outdir, exist_ok=True)
 
