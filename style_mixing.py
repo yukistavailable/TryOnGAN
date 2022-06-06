@@ -37,6 +37,118 @@ def num_range(s: str) -> List[int]:
 # ----------------------------------------------------------------------------
 
 
+def generate_style_mix_from_w(
+        network_pkl: str,
+        row_ws: List[int],
+        col_ws: List[int],
+        row_images: List[int],
+        col_images: List[int],
+        col_styles: List[int],
+        truncation_psi: float,
+        noise_mode: str,
+        outdir: str
+):
+    """Generate images using pretrained network pickle.
+
+    Examples:
+
+    \b
+    python style_mixing.py --outdir=out --rows=85,100,75,458,1500 --cols=55,821,1789,293 \\
+        --network=https://nvlabs-fi-cdn.nvidia.com/stylegan2-ada-pytorch/pretrained/metfaces.pkl
+    """
+    print('Loading networks from "%s"...' % network_pkl)
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    with dnnlib.util.open_url(network_pkl) as f:
+        G = legacy.load_network_pkl(f)['G_ema'].to(device)  # type: ignore
+        if not torch.cuda.is_available():
+            G = G.float()
+            # G.forward = functools.partial(G.forward, force_fp32=True)
+
+    os.makedirs(outdir, exist_ok=True)
+
+    all_seeds = [i for i in range(len(row_ws) + len(col_ws))]
+    w_avg = G.mapping.w_avg
+    all_w = torch.from_numpy(np.stack(row_ws + col_ws))
+    all_w = all_w.reshape([len(all_w), len(all_w[0][0]), len(all_w[0][0][0])])
+    w_dict = {seed: w for seed, w in zip(all_seeds, list(all_w))}
+
+    print('Generating images...')
+    all_images = G.synthesis(all_w, noise_mode=noise_mode, force_fp32=True)
+    all_images = (
+        all_images.permute(
+            0,
+            2,
+            3,
+            1) *
+        127.5 +
+        128).clamp(
+        0,
+        255).to(
+        torch.uint8).cpu().numpy()
+    image_dict = {(seed, seed): image for seed,
+                  image in zip(all_seeds, list(all_images))}
+
+    print('Generating style-mixed images...')
+    for row_seed in range(len(row_ws)):
+        for col_seed in range(len(col_ws)):
+            col_seed += len(row_ws)
+            w = w_dict[row_seed].clone()
+            w[col_styles] = w_dict[col_seed][col_styles]
+            image = G.synthesis(
+                w[np.newaxis], noise_mode=noise_mode, force_fp32=True)
+            image = (
+                image.permute(
+                    0,
+                    2,
+                    3,
+                    1) *
+                127.5 +
+                128).clamp(
+                0,
+                255).to(
+                torch.uint8)
+            image_dict[(row_seed, col_seed)] = image[0].cpu().numpy()
+
+    print('Saving image grid...')
+    W = G.img_resolution
+    H = G.img_resolution
+    canvas = PIL.Image.new(
+        'RGB', (W * (len(col_ws) + 2), H * (len(row_ws) + 2)), 'black')
+    for row_idx, row_seed in enumerate([i for i in range(len(row_ws) + 1)]):
+        if row_seed != 0:
+            row_seed -= 1
+        for col_idx, col_seed in enumerate(
+                [i for i in range(len(col_ws) + 1)]):
+            col_seed = col_seed + len(row_ws) - 1
+            if row_idx == 0 and col_idx == 0:
+                continue
+            if row_idx == col_idx:
+                continue
+            key = (row_seed, col_seed)
+            if row_idx == 0:
+                key = (col_seed, col_seed)
+            if col_idx == 0:
+                key = (row_seed, row_seed)
+            print(key)
+            canvas.paste(
+                PIL.Image.fromarray(
+                    image_dict[key],
+                    'RGB'),
+                (W * (col_idx + 1),
+                 H * (row_idx + 1)))
+    for i in range(len(col_ws)):
+        canvas.paste(
+            PIL.Image.open(col_images[i]).resize((W, H)),
+            (W * (i + 2),
+             H * 0))
+    for i in range(len(row_ws)):
+        canvas.paste(
+            PIL.Image.open(row_images[i]).resize((W, H)),
+            (W * 0,
+             H * (i + 2)))
+    canvas.save(f'{outdir}/grid.png')
+
+
 def generate_style_mix_from_outside(
         network_pkl: str,
         row_seeds: List[int],

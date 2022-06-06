@@ -100,7 +100,7 @@ def project(
     # Features for target image.
     target_images = target.unsqueeze(0).to(device).to(torch.float32)
     is_PC = False
-    if pose:
+    if pose is not None:
         is_PC = True
         pose = pose.unsqueeze(0).to(device).to(torch.float32)
     if target_images.shape[2] > 256:
@@ -494,7 +494,7 @@ def run_projection_from_outside(
             bitrate='16M')
         print(f'Saving optimization progress video "{outdir}/proj.mp4"')
         for projected_w in projected_w_steps:
-            if phase_pose:
+            if phase_pose is not None:
                 synth_image = G.synthesis(
                     projected_w.unsqueeze(0),
                     phase_pose.unsqueeze(0).to(device),
@@ -526,7 +526,7 @@ def run_projection_from_outside(
     target_pil.save(f'{outdir}/target.png')
     projected_w = projected_w_steps[-1]
 
-    if phase_pose:
+    if phase_pose is not None:
         synth_image = G.synthesis(
             projected_w.unsqueeze(0),
             phase_pose.unsqueeze(0).to(device),
